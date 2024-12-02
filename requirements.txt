@@ -1,0 +1,6 @@
+pyrogram
+requests
+telebot
+uvloop
+tgcrypto
+flask
