@@ -13,6 +13,9 @@ app = Client("deploy_bot", api_id="961780", api_hash="bbbfa43f067e1e8e2fb41f334d
 # Inisialisasi Flask untuk fake website
 web_app = Flask(__name__)
 
+# Menyimpan informasi tentang subprocess yang berjalan
+process_registry = {}
+
 @web_app.route('/')
 def home():
     return "Fake Website - Server is Running!"
@@ -46,14 +49,37 @@ async def deploy(client: Client, message: Message):
         await message.reply(f"Skrip berhasil didownload! Menjalankan skrip di profil baru...")
         
         # Menjalankan skrip dalam proses baru (subprocess)
-        subprocess.Popen(['python', temp_file_path], env=os.environ)  # Anda bisa menambahkan env terpisah jika diperlukan
-
-        await message.reply("Skrip berhasil dijalankan di profil terpisah.")
+        process = subprocess.Popen(['python', temp_file_path], env=os.environ)
+        process_registry[message.chat.id] = {"process": process, "file": temp_file_path}
+        
+        await message.reply(f"Skrip berhasil dijalankan dengan PID {process.pid}.")
         
     except requests.exceptions.RequestException as e:
         await message.reply(f"Gagal mendownload skrip: {e}")
     except Exception as e:
         await message.reply(f"Terjadi kesalahan: {e}")
+
+# Fungsi untuk cek status proses
+@app.on_message(filters.command("status"))
+async def status(client: Client, message: Message):
+    process_info = process_registry.get(message.chat.id)
+    if process_info and process_info["process"].poll() is None:
+        await message.reply(f"Skrip berjalan dengan PID {process_info['process'].pid}.")
+    else:
+        await message.reply("Tidak ada skrip yang sedang berjalan.")
+
+# Fungsi untuk menghentikan proses
+@app.on_message(filters.command("stop"))
+async def stop(client: Client, message: Message):
+    process_info = process_registry.get(message.chat.id)
+    if process_info and process_info["process"].poll() is None:
+        process_info["process"].terminate()
+        process_info["process"].wait()
+        os.remove(process_info["file"])  # Hapus file sementara
+        del process_registry[message.chat.id]
+        await message.reply("Proses skrip berhasil dihentikan.")
+    else:
+        await message.reply("Tidak ada proses yang dapat dihentikan.")
 
 # Fungsi utama untuk menjalankan bot dan web server
 if __name__ == "__main__":
