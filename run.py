@@ -5,10 +5,19 @@ import subprocess
 from threading import Thread
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
-from flask import Flask
+from flask import Flask, request
+import logging
+
+# Konfigurasi logging
+logging.basicConfig(level=logging.INFO)
+
+# Variabel Lingkungan
+API_ID = os.getenv("API_ID", "961780")
+API_HASH = os.getenv("API_HASH", "bbbfa43f067e1e8e2fb41f334d32a6a7")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7342220709:AAEyZVJPKuy6w_N9rwrVW3GghYyxx3jixww")
 
 # Inisialisasi bot Telegram
-app = Client("deploy_bot", api_id="961780", api_hash="bbbfa43f067e1e8e2fb41f334d32a6a7", bot_token="7342220709:AAEyZVJPKuy6w_N9rwrVW3GghYyxx3jixww")
+app = Client("deploy_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # Inisialisasi Flask untuk fake website
 web_app = Flask(__name__)
@@ -23,38 +32,49 @@ def home():
 # Menjalankan server Flask
 def run_flask():
     port = int(os.getenv("PORT", 5000))  # Default ke 5000 jika tidak ada PORT di environment
+    logging.info(f"Menjalankan Flask di port {port}")
     web_app.run(host="0.0.0.0", port=port, threaded=True)
+
+# Endpoint Flask untuk mematikan server
+@web_app.route('/shutdown', methods=['POST'])
+def shutdown():
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func:
+        func()
+        return "Server shutting down..."
+    else:
+        return "Shutdown function not available."
 
 # Fungsi untuk deploy skrip dari URL atau file
 @app.on_message(filters.command("deploy") | filters.document)
 async def deploy(client: Client, message: Message):
-    if message.document and message.document.file_name.endswith(".py"):
-        # Jika file dikirim, gunakan file yang diunggah
-        await message.reply("Menerima file skrip. Sedang mendownload...")
-        file_path = await message.download()
-    elif len(message.command) > 1:
-        # Jika URL dikirim, unduh skrip dari URL
-        url = message.command[1]
-        await message.reply(f"Men-download skrip dari {url}...")
-        try:
-            response = requests.get(url)
-            response.raise_for_status()  # Jika terjadi error saat mengunduh
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
-                temp_file.write(response.content)
-                file_path = temp_file.name
-        except requests.exceptions.RequestException as e:
-            await message.reply(f"Gagal mendownload skrip: {e}")
-            return
-    else:
-        await message.reply("Silakan berikan URL atau file skrip untuk dideploy!")
-        return
-
     try:
+        if message.document and message.document.file_name.endswith(".py"):
+            # Jika file dikirim, gunakan file yang diunggah
+            await message.reply("Menerima file skrip. Sedang mendownload...")
+            file_path = await message.download()
+        elif len(message.command) > 1:
+            # Jika URL dikirim, unduh skrip dari URL
+            url = message.command[1]
+            await message.reply(f"Men-download skrip dari {url}...")
+            try:
+                response = requests.get(url)
+                response.raise_for_status()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+                    temp_file.write(response.content)
+                    file_path = temp_file.name
+            except requests.exceptions.RequestException as e:
+                await message.reply(f"Gagal mendownload skrip: {e}")
+                return
+        else:
+            await message.reply("Silakan berikan URL atau file skrip untuk dideploy!")
+            return
+
         # Jalankan skrip dalam subprocess dan simpan log di file terpisah
         log_file_path = file_path + ".log"
         with open(log_file_path, "w") as log_file:
             process = subprocess.Popen(
-                ['python', file_path],
+                ['python3', file_path],
                 stdout=log_file,
                 stderr=log_file,
                 env=os.environ
@@ -68,8 +88,66 @@ async def deploy(client: Client, message: Message):
             "status": "✅ Berjalan"
         }
         await message.reply(f"Skrip berhasil dijalankan dengan PID {process.pid}.")
+
+        # Pantau proses untuk menangani crash
+        monitor_process(client, process.pid, message.chat.id)
+
     except Exception as e:
         await message.reply(f"Terjadi kesalahan saat menjalankan skrip: {e}")
+
+# Fungsi untuk memantau proses
+def monitor_process(client: Client, pid: int, chat_id: int):
+    def check():
+        process_info = process_registry[pid]
+        process = process_info["process"]
+        return_code = process.poll()
+        if return_code is not None:
+            # Proses telah berhenti
+            process_info["status"] = f"❌ Gagal (Kode: {return_code})"
+            log_path = process_info["log"]
+            error_message = f"Proses dengan PID {pid} telah berhenti secara tak terduga."
+            if os.path.exists(log_path):
+                with open(log_path, "r") as log_file:
+                    error_logs = log_file.read()
+                error_message += f"\n\nLog error:\n```\n{error_logs[-4000:]}\n```"
+            else:
+                error_message += "\nLog file tidak ditemukan."
+            
+            # Kirim pesan ke Telegram
+            client.send_message(chat_id, error_message, parse_mode="markdown")
+            # Coba restart ulang
+            restart_process(pid, chat_id)
+    
+    # Jalankan di thread terpisah
+    thread = Thread(target=check)
+    thread.start()
+
+# Fungsi untuk me-restart proses
+def restart_process(pid: int, chat_id: int):
+    process_info = process_registry.get(pid)
+    if not process_info:
+        return
+    file_path = process_info["file"]
+    log_file_path = process_info["log"]
+    try:
+        # Jalankan ulang proses
+        with open(log_file_path, "w") as log_file:
+            new_process = subprocess.Popen(
+                ['python3', file_path],
+                stdout=log_file,
+                stderr=log_file,
+                env=os.environ
+            )
+        process_registry[new_process.pid] = {
+            "process": new_process,
+            "file": file_path,
+            "log": log_file_path,
+            "status": "✅ Berjalan"
+        }
+        process_registry.pop(pid)  # Hapus proses lama
+        app.send_message(chat_id, f"Proses dengan PID {pid} telah direstart. PID baru: {new_process.pid}.")
+    except Exception as e:
+        app.send_message(chat_id, f"Gagal me-restart proses PID {pid}: {e}")
 
 # Fungsi untuk cek status semua proses
 @app.on_message(filters.command("status"))
@@ -100,12 +178,7 @@ async def log(client: Client, message: Message):
 
         log_file_path = process_registry[pid]["log"]
         if os.path.exists(log_file_path):
-            with open(log_file_path, "r") as log_file:
-                log_content = log_file.read()
-            if log_content.strip():
-                await message.reply(f"Log PID {pid}:\n```\n{log_content}\n```", parse_mode="markdown")
-            else:
-                await message.reply(f"Log PID {pid} masih kosong.")
+            await message.reply_document(log_file_path, caption=f"Log untuk PID {pid}.")
         else:
             await message.reply("Log file tidak ditemukan.")
     except ValueError:
@@ -155,5 +228,3 @@ if __name__ == "__main__":
         print("Menutup aplikasi...")
     finally:
         app.stop()
-        # Jika ingin menghentikan Flask juga saat bot berhenti, Anda bisa menambah ini:
-        # web_app.shutdown()
