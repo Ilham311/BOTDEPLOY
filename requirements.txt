@@ -6,6 +6,7 @@ uvloop
 tgcrypto
 flask
 telebot
+aiohttp
 anyio==4.2.0
 argcomplete==3.2.1
 asn1crypto==1.5.1
