@@ -3,6 +3,7 @@ pyrogram
 requests
 telebot
 uvloop
+Pillow
 tgcrypto
 flask
 telebot
