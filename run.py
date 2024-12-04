@@ -25,103 +25,112 @@ def run_flask():
     port = int(os.getenv("PORT", 5000))  # Default ke 5000 jika tidak ada PORT di environment
     web_app.run(host="0.0.0.0", port=port, threaded=True)
 
-# Fungsi untuk deploy skrip dari URL
-@app.on_message(filters.command("deploy"))
+# Fungsi untuk deploy skrip dari URL atau file
+@app.on_message(filters.command("deploy") | filters.document)
 async def deploy(client: Client, message: Message):
-    if len(message.command) < 2:
-        await message.reply("Silakan berikan URL skrip untuk dideploy!")
+    if message.document and message.document.file_name.endswith(".py"):
+        # Jika file dikirim, gunakan file yang diunggah
+        await message.reply("Menerima file skrip. Sedang mendownload...")
+        file_path = await message.download()
+    elif len(message.command) > 1:
+        # Jika URL dikirim, unduh skrip dari URL
+        url = message.command[1]
+        await message.reply(f"Men-download skrip dari {url}...")
+        try:
+            response = requests.get(url)
+            response.raise_for_status()  # Jika terjadi error saat mengunduh
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+                temp_file.write(response.content)
+                file_path = temp_file.name
+        except requests.exceptions.RequestException as e:
+            await message.reply(f"Gagal mendownload skrip: {e}")
+            return
+    else:
+        await message.reply("Silakan berikan URL atau file skrip untuk dideploy!")
         return
-    
-    url = message.command[1]
-    
-    # Unduh skrip dari URL
-    await message.reply(f"Men-download skrip dari {url}...")
-    try:
-        response = requests.get(url)
-        response.raise_for_status()  # Jika terjadi error saat mengunduh
-        script_content = response.text
-        
-        # Membuat file sementara untuk skrip
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
-            temp_file.write(script_content.encode())
-            temp_file_path = temp_file.name
-        
-        await message.reply(f"Skrip berhasil didownload! Menjalankan skrip di profil baru...")
-        
-        # Menjalankan skrip dalam subprocess
-        with open(f"{temp_file_path}.log", "w") as log_file:
-            process = subprocess.Popen(['python', temp_file_path], stdout=log_file, stderr=log_file, env=os.environ)
-            process_registry[message.chat.id] = {"process": process, "file": temp_file_path, "log": f"{temp_file_path}.log"}
-        
-        await message.reply(f"Skrip berhasil dijalankan dengan PID {process.pid}. ✅")
-        
-    except requests.exceptions.RequestException as e:
-        await message.reply(f"Gagal mendownload skrip: {e} ❌")
-    except Exception as e:
-        await message.reply(f"Terjadi kesalahan: {e} ❌")
 
-# Fungsi untuk cek status proses
+    try:
+        # Jalankan skrip dalam subprocess dan simpan log di file terpisah
+        log_file_path = file_path + ".log"
+        with open(log_file_path, "w") as log_file:
+            process = subprocess.Popen(
+                ['python', file_path],
+                stdout=log_file,
+                stderr=log_file,
+                env=os.environ
+            )
+
+        # Tambahkan ke registry
+        process_registry[process.pid] = {
+            "process": process,
+            "file": file_path,
+            "log": log_file_path,
+            "status": "✅ Berjalan"
+        }
+        await message.reply(f"Skrip berhasil dijalankan dengan PID {process.pid}.")
+    except Exception as e:
+        await message.reply(f"Terjadi kesalahan saat menjalankan skrip: {e}")
+
+# Fungsi untuk cek status semua proses
 @app.on_message(filters.command("status"))
 async def status(client: Client, message: Message):
-    process_info = process_registry.get(message.chat.id)
-    if process_info:
-        if process_info["process"].poll() is None:
-            await message.reply(f"Skrip berjalan dengan PID {process_info['process'].pid}. ✅")
-        else:
-            await message.reply(f"Skrip telah berhenti. ❌")
-    else:
-        await message.reply("Tidak ada skrip yang sedang berjalan. ❌")
+    if not process_registry:
+        await message.reply("Tidak ada skrip yang sedang berjalan.")
+        return
 
-# Fungsi untuk menghentikan proses
-@app.on_message(filters.command("stop"))
-async def stop(client: Client, message: Message):
-    process_info = process_registry.get(message.chat.id)
-    if process_info and process_info["process"].poll() is None:
-        process_info["process"].terminate()
-        process_info["process"].wait()
-        os.remove(process_info["file"])  # Hapus file sementara
-        del process_registry[message.chat.id]
-        await message.reply("Proses skrip berhasil dihentikan. ✅")
-    else:
-        await message.reply("Tidak ada proses yang dapat dihentikan. ❌")
+    status_message = "Status Skrip yang Berjalan:\n"
+    for pid, info in process_registry.items():
+        if info["process"].poll() is not None:  # Proses telah berhenti
+            info["status"] = "❌ Gagal"
+        status_message += f"- PID {pid}: {info['status']} (File: {os.path.basename(info['file'])})\n"
+    await message.reply(status_message)
 
-# Fungsi untuk mendapatkan log proses
+# Fungsi untuk mengambil log proses tertentu
 @app.on_message(filters.command("log"))
 async def log(client: Client, message: Message):
     if len(message.command) < 2:
-        await message.reply("Silakan masukkan nama file atau PID untuk mendapatkan log!")
+        await message.reply("Gunakan: /log <PID>")
         return
 
-    identifier = message.command[1]
-    for chat_id, info in process_registry.items():
-        if str(info["process"].pid) == identifier or info["file"].endswith(identifier):
-            if os.path.exists(info["log"]):
-                await message.reply_document(info["log"], caption=f"Log untuk proses PID {info['process'].pid}")
-            else:
-                await message.reply("Log tidak ditemukan. ❌")
-            return
-    await message.reply("Proses tidak ditemukan. ❌")
-
-# Fungsi untuk deploy dari file
-@app.on_message(filters.document & filters.private)
-async def deploy_from_file(client: Client, message: Message):
-    file_name = message.document.file_name
-    if not file_name.endswith(".py"):
-        await message.reply("Hanya file dengan ekstensi `.py` yang didukung. ❌")
-        return
-    
-    await message.reply("Men-download file...")
-    file_path = await message.download()
-    
     try:
-        await message.reply("Menjalankan skrip...")
-        with open(f"{file_path}.log", "w") as log_file:
-            process = subprocess.Popen(['python', file_path], stdout=log_file, stderr=log_file, env=os.environ)
-            process_registry[message.chat.id] = {"process": process, "file": file_path, "log": f"{file_path}.log"}
-        
-        await message.reply(f"Skrip berhasil dijalankan dengan PID {process.pid}. ✅")
-    except Exception as e:
-        await message.reply(f"Terjadi kesalahan: {e} ❌")
+        pid = int(message.command[1])
+        if pid not in process_registry:
+            await message.reply("PID tidak ditemukan.")
+            return
+
+        log_file_path = process_registry[pid]["log"]
+        if os.path.exists(log_file_path):
+            await message.reply_document(log_file_path)
+        else:
+            await message.reply("Log file tidak ditemukan.")
+    except ValueError:
+        await message.reply("PID harus berupa angka.")
+
+# Fungsi untuk menghentikan proses tertentu
+@app.on_message(filters.command("stop"))
+async def stop(client: Client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Gunakan: /stop <PID>")
+        return
+
+    try:
+        pid = int(message.command[1])
+        if pid not in process_registry:
+            await message.reply("PID tidak ditemukan.")
+            return
+
+        process_info = process_registry[pid]
+        if process_info["process"].poll() is None:  # Proses masih berjalan
+            process_info["process"].terminate()
+            process_info["process"].wait()
+            os.remove(process_info["file"])  # Hapus file sementara
+            os.remove(process_info["log"])  # Hapus file log
+            del process_registry[pid]
+            await message.reply(f"Proses dengan PID {pid} berhasil dihentikan.")
+        else:
+            await message.reply("Proses telah berhenti.")
+    except ValueError:
+        await message.reply("PID harus berupa angka.")
 
 # Fungsi utama untuk menjalankan bot dan web server
 if __name__ == "__main__":
