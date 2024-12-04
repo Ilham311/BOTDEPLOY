@@ -8,13 +8,10 @@ from pyrogram.types import Message
 from flask import Flask
 
 # Inisialisasi bot Telegram
-app = Client("deploy_bot", api_id="961780", api_hash="bbbfa43f067e1e8e2fb41f334d32a6a7", bot_token="7342220709:AAEyZVJPKuy6w_N9rwrVW3GghYyxx3jixww")
+app = Client("deploy_bot", api_id="YOUR_API_ID", api_hash="YOUR_API_HASH", bot_token="YOUR_BOT_TOKEN")
 
 # Inisialisasi Flask untuk fake website
 web_app = Flask(__name__)
-
-# Menyimpan informasi tentang subprocess yang berjalan
-process_registry = {}
 
 @web_app.route('/')
 def home():
@@ -25,61 +22,76 @@ def run_flask():
     port = int(os.getenv("PORT", 5000))  # Default ke 5000 jika tidak ada PORT di environment
     web_app.run(host="0.0.0.0", port=port, threaded=True)
 
-# Fungsi untuk deploy skrip
+# Dictionary untuk melacak proses yang sedang berjalan
+running_processes = {}
+
+# Fungsi untuk perintah /deploy
 @app.on_message(filters.command("deploy"))
 async def deploy(client: Client, message: Message):
     if len(message.command) < 2:
         await message.reply("Silakan berikan URL skrip untuk dideploy!")
         return
-    
+
     url = message.command[1]
-    
-    # Unduh skrip dari URL
     await message.reply(f"Men-download skrip dari {url}...")
+    
     try:
+        # Unduh skrip
         response = requests.get(url)
-        response.raise_for_status()  # Jika terjadi error saat mengunduh
+        response.raise_for_status()  # Jika gagal, lempar error
         script_content = response.text
-        
-        # Membuat file sementara untuk skrip
+
+        # Simpan skrip ke file sementara
         with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
             temp_file.write(script_content.encode())
             temp_file_path = temp_file.name
-        
-        await message.reply(f"Skrip berhasil didownload! Menjalankan skrip di profil baru...")
-        
-        # Menjalankan skrip dalam proses baru (subprocess)
+
+        await message.reply("Skrip berhasil didownload! Menjalankan skrip di profil baru...")
+
+        # Jalankan skrip di subprocess
         process = subprocess.Popen(['python', temp_file_path], env=os.environ)
-        process_registry[message.chat.id] = {"process": process, "file": temp_file_path}
-        
-        await message.reply(f"Skrip berhasil dijalankan dengan PID {process.pid}.")
-        
+        pid = process.pid
+        running_processes[pid] = temp_file_path
+
+        await message.reply(f"Skrip berhasil dijalankan dengan PID {pid}.")
+
     except requests.exceptions.RequestException as e:
         await message.reply(f"Gagal mendownload skrip: {e}")
     except Exception as e:
         await message.reply(f"Terjadi kesalahan: {e}")
 
-# Fungsi untuk cek status proses
+# Fungsi untuk perintah /status
 @app.on_message(filters.command("status"))
 async def status(client: Client, message: Message):
-    process_info = process_registry.get(message.chat.id)
-    if process_info and process_info["process"].poll() is None:
-        await message.reply(f"Skrip berjalan dengan PID {process_info['process'].pid}.")
-    else:
+    if not running_processes:
         await message.reply("Tidak ada skrip yang sedang berjalan.")
+        return
 
-# Fungsi untuk menghentikan proses
+    status_message = "Skrip yang sedang berjalan:\n\n"
+    for pid, path in running_processes.items():
+        status_message += f"PID: {pid}, Path: {path}\n"
+
+    await message.reply(status_message)
+
+# Fungsi untuk perintah /stop
 @app.on_message(filters.command("stop"))
 async def stop(client: Client, message: Message):
-    process_info = process_registry.get(message.chat.id)
-    if process_info and process_info["process"].poll() is None:
-        process_info["process"].terminate()
-        process_info["process"].wait()
-        os.remove(process_info["file"])  # Hapus file sementara
-        del process_registry[message.chat.id]
-        await message.reply("Proses skrip berhasil dihentikan.")
-    else:
-        await message.reply("Tidak ada proses yang dapat dihentikan.")
+    if len(message.command) < 2:
+        await message.reply("Silakan berikan PID proses yang ingin dihentikan!")
+        return
+
+    try:
+        pid = int(message.command[1])
+        if pid in running_processes:
+            os.kill(pid, 9)  # Hentikan proses dengan PID
+            del running_processes[pid]
+            await message.reply(f"Proses dengan PID {pid} berhasil dihentikan.")
+        else:
+            await message.reply(f"Tidak ada proses dengan PID {pid}.")
+    except ValueError:
+        await message.reply("PID harus berupa angka.")
+    except Exception as e:
+        await message.reply(f"Terjadi kesalahan saat menghentikan proses: {e}")
 
 # Fungsi utama untuk menjalankan bot dan web server
 if __name__ == "__main__":
@@ -88,7 +100,7 @@ if __name__ == "__main__":
         # Jalankan server Flask di thread terpisah
         thread = Thread(target=run_flask)
         thread.start()
-        
+
         # Mulai bot Pyrogram
         app.start()
 
@@ -99,5 +111,3 @@ if __name__ == "__main__":
         print("Menutup aplikasi...")
     finally:
         app.stop()
-        # Jika ingin menghentikan Flask juga saat bot berhenti, Anda bisa menambah ini:
-        # web_app.shutdown()
