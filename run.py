@@ -85,7 +85,7 @@ async def status(client: Client, message: Message):
         status_message += f"- PID {pid}: {info['status']} (File: {os.path.basename(info['file'])})\n"
     await message.reply(status_message)
 
-# Fungsi untuk mengambil log proses tertentu
+# Fungsi untuk membaca log proses tertentu
 @app.on_message(filters.command("log"))
 async def log(client: Client, message: Message):
     if len(message.command) < 2:
@@ -100,7 +100,12 @@ async def log(client: Client, message: Message):
 
         log_file_path = process_registry[pid]["log"]
         if os.path.exists(log_file_path):
-            await message.reply_document(log_file_path)
+            with open(log_file_path, "r") as log_file:
+                log_content = log_file.read()
+            if log_content.strip():
+                await message.reply(f"Log PID {pid}:\n```\n{log_content}\n```", parse_mode="markdown")
+            else:
+                await message.reply(f"Log PID {pid} masih kosong.")
         else:
             await message.reply("Log file tidak ditemukan.")
     except ValueError:
