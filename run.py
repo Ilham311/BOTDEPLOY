@@ -8,8 +8,7 @@ from pyrogram.types import Message
 from flask import Flask
 
 # Inisialisasi bot Telegram
-app = Client("deploy_bot", api_id="YOUR_API_ID", api_hash="YOUR_API_HASH", bot_token="YOUR_BOT_TOKEN")
-
+app = Client("deploy_bot", api_id="961780", api_hash="bbbfa43f067e1e8e2fb41f334d32a6a7", bot_token="7342220709:AAEyZVJPKuy6w_N9rwrVW3GghYyxx3jixww")
 # Inisialisasi Flask untuk fake website
 web_app = Flask(__name__)
 
