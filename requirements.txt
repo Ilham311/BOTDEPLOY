@@ -5,6 +5,7 @@ requests
 telebot
 uvloop
 Pillow
+telegraph
 tgcrypto
 flask
 telebot
